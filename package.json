@@ -1,0 +1,28 @@
+{
+  "name": "tessera",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/StationaryDev37/tessera.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/StationaryDev37/tessera/issues"
+  },
+  "homepage": "https://github.com/StationaryDev37/tessera#readme",
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.9.3",
+    "pg": "^8.18.0",
+    "stripe": "^20.3.1"
+  },
+  "type": "module"
+}
