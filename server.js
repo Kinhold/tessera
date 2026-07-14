@@ -1,25 +1,41 @@
-import express from 'express';
-import { config } from 'dotenv';
-import { createHmac, randomBytes } from 'crypto';
+import 'dotenv/config';
 import Redis from 'ioredis';
 import pg from 'pg';
 import Stripe from 'stripe';
-config();
-const redis=new Redis(process.env.REDIS_URL);
-const pool=new pg.Pool({connectionString:process.env.DATABASE_URL});
-const stripe=new Stripe(process.env.STRIPE_SECRET_KEY);
-const app=express();
-const TIERS={FREE:{limit:100,rateWindowMs:60000},PRO:{limit:5000,rateWindowMs:3000},WHALE:{limit:Infinity,rateWindowMs:0}};
-const PRICE_TO_TIER={[process.env.STRIPE_PRICE_PRO]:'PRO',[process.env.STRIPE_PRICE_WHALE]:'WHALE'};
-const generateApiKey=()=>{const raw=randomBytes(32).toString('hex');const apiKey=`tsk_${raw}`;const hash=createHmac('sha256',process.env.API_KEY_SECRET).update(apiKey).digest('hex');return{apiKey,hash};};
-const issueKey=async({email,tier='FREE'})=>{const{apiKey,hash}=generateApiKey();const result=await pool.query(`INSERT INTO subscribers (api_key_hash,email,tier) VALUES ($1,$2,$3) RETURNING uid`,[hash,email,tier]);const uid=result.rows[0].uid;await redis.hset(`apikey:${apiKey}`,{uid:uid.toString(),tier});await redis.set(`uid_to_key:${uid}`,apiKey);return{apiKey,uid};};
-const paywall=async(req,res,next)=>{const apiKey=req.headers['x-api-key'];if(!apiKey)return res.status(401).json({error:'API key required'});try{const userData=await redis.hgetall(`apikey:${apiKey}`);if(!userData?.tier)return res.status(403).json({error:'Invalid API key'});const{tier,uid}=userData;const tierConfig=TIERS[tier];const monthKey=new Date().toISOString().slice(0,7);const volumeKey=`usage:${uid}:${monthKey}`;const rateKey=`rate:${uid}`;if(tierConfig.limit!==Infinity){const volume=parseInt(await redis.get(volumeKey)||'0');if(volume>=tierConfig.limit)return res.status(402).json({error:'Monthly limit reached'});}if(tierConfig.rateWindowMs>0){if(await redis.get(rateKey))return res.status(429).json({error:'Rate limit exceeded'});await redis.set(rateKey,'1','PX',tierConfig.rateWindowMs);}const pipe=redis.pipeline();pipe.incr(volumeKey);pipe.expire(volumeKey,60*60*24*35);await pipe.exec();req.user={uid,tier,apiKey};next();}catch(err){res.status(500).json({error:'Auth error'});}};
-app.post('/webhook',express.raw({type:'application/json'}),async(req,res)=>{let event;try{event=stripe.webhooks.constructEvent(req.body,req.headers['stripe-signature'],process.env.STRIPE_WEBHOOK_SECRET);}catch(err){return res.status(400).json({error:'Invalid signature'});}const idKey=`stripe_event:${event.id}`;if(await redis.get(idKey))return res.json({received:true,duplicate:true});try{if(event.type==='checkout.session.completed'){const session=event.data.object;const items=await stripe.checkout.sessions.listLineItems(session.id);const newTier=PRICE_TO_TIER[items.data[0]?.price?.id];if(newTier){await pool.query(`UPDATE subscribers SET tier=$1 WHERE stripe_customer_id=$2`,[newTier,session.customer]);const r=await pool.query(`SELECT uid FROM subscribers WHERE stripe_customer_id=$1`,[session.customer]);if(r.rows.length){const apiKey=await redis.get(`uid_to_key:${r.rows[0].uid}`);if(apiKey)await redis.hset(`apikey:${apiKey}`,'tier',newTier);}}}if(event.type==='customer.subscription.deleted'){const r=await pool.query(`UPDATE subscribers SET tier='FREE' WHERE stripe_customer_id=$1 RETURNING uid`,[event.data.object.customer]);if(r.rows.length){const apiKey=await redis.get(`uid_to_key:${r.rows[0].uid}`);if(apiKey)await redis.hset(`apikey:${apiKey}`,'tier','FREE');}}await redis.set(idKey,'1','EX',86400);res.json({received:true});}catch(err){res.json({received:true,error:err.message});}});
-app.use(express.json());
-app.post('/v1/register',async(req,res)=>{const{email}=req.body;if(!email)return res.status(400).json({error:'Email required'});try{const{apiKey,uid}=await issueKey({email});res.json({message:'Store this key it will not be shown again',apiKey,uid,tier:'FREE'});}catch(err){res.status(500).json({error:'Registration failed'});}});
-app.post('/v1/generate',paywall,async(req,res)=>{res.json({success:true,message:'Noir circuit coming soon',user:req.user});});
-app.post('/v1/verify',paywall,async(req,res)=>{res.json({verified:true,user:req.user});});
-app.use(express.static('public'));
-app.get('/health',(_,res)=>res.json({status:'Tessera online',version:'1.0.0'}));
-const PORT=process.env.PORT||3000;
-app.listen(PORT,()=>console.log(`Tessera running on port ${PORT}`));
+import { createApp } from './src/app.js';
+import { loadConfig } from './src/config.js';
+import { createApiRateLimiter, createFixedWindowRateLimiter } from './src/rate-limit.js';
+
+const serviceConfig = loadConfig();
+const redis = new Redis(serviceConfig.redisUrl, {
+  enableOfflineQueue: false,
+  maxRetriesPerRequest: 1,
+});
+const pool = new pg.Pool({ connectionString: serviceConfig.databaseUrl });
+const stripe = new Stripe(serviceConfig.stripeSecretKey, {
+  apiVersion: '2026-06-24.dahlia',
+});
+
+const app = createApp({
+  config: serviceConfig,
+  pool,
+  redis,
+  stripe,
+  apiRateLimiter: createApiRateLimiter(redis, serviceConfig.tiers),
+  registrationRateLimiter: createFixedWindowRateLimiter(redis),
+});
+
+const server = app.listen(serviceConfig.port, () => {
+  console.log(`Tessera listening on port ${serviceConfig.port}`);
+});
+
+async function shutdown(signal) {
+  console.log(`${signal} received; shutting down`);
+  server.close(async () => {
+    await Promise.allSettled([pool.end(), redis.quit()]);
+    process.exit(0);
+  });
+}
+
+process.once('SIGINT', () => shutdown('SIGINT'));
+process.once('SIGTERM', () => shutdown('SIGTERM'));
