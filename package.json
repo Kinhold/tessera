@@ -1,0 +1,49 @@
+{
+  "name": "@kinhold/tessera-api",
+  "version": "1.1.0",
+  "description": "Kinhold Tessera API service skeleton for zero-knowledge proof infrastructure",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "check": "node --check server.js && node --check src/*.js && node --check scripts/*.js",
+    "db:migrate": "node scripts/migrate.js",
+    "prepack": "npm run check && npm test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "files": [
+    "server.js",
+    "src/",
+    "scripts/",
+    "migrations/",
+    ".env.example",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kinhold/tessera.git"
+  },
+  "keywords": [
+    "kinhold",
+    "zero-knowledge",
+    "api"
+  ],
+  "author": "Kinhold",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Kinhold/tessera/issues"
+  },
+  "homepage": "https://github.com/Kinhold/tessera#readme",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "ioredis": "^5.9.3",
+    "pg": "^8.18.0",
+    "stripe": "^20.3.1"
+  },
+  "type": "module"
+}
